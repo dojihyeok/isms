@@ -20,6 +20,18 @@ export const getMoinSecurityAssignee = (work: OperatingWork) => {
 
 const includesAny = (value: string, keywords: string[]) => keywords.some(keyword => value.includes(keyword));
 
+const explicitExecutionOwners: Record<string,string> = {
+  'POL-01':'Compliance','POL-02':'정보보안팀','POL-03':'정보보안팀','POL-04':'경영지원팀','POL-05':'정보보안팀',
+  'AST-01':'서비스운영팀','AST-02':'DevOps','AST-03':'해당 업무부서·자산소유자','AST-04':'DevOps',
+  'OPS-01':'정보보안팀','OPS-02':'DevOps','OPS-03':'정보보안팀','OPS-04':'정보보안팀','OPS-05':'DevOps','OPS-06':'DevOps','OPS-07':'해당 업무부서','OPS-08':'DevOps','OPS-09':'DevOps','OPS-10':'DevOps',
+  'VEN-01':'경영지원팀(구매 기능)','VEN-02':'경영지원팀(구매 기능)','VEN-03':'서비스운영팀','VEN-04':'DevOps','VEN-05':'서비스운영팀',
+  'INC-01':'정보보안팀','INC-02':'정보보안팀','INC-03':'법무팀','INC-04':'정보보안팀','INC-05':'정보보안팀',
+  'BCP-01':'서비스운영팀','BCP-02':'서비스운영팀','BCP-03':'DevOps',
+  'PRI-01':'서비스운영팀','PRI-02':'서비스운영팀','PRI-03':'법무팀','PRI-04':'법무팀','PRI-05':'Data팀','PRI-06':'서비스운영팀','PRI-07':'서비스운영팀',
+  'BAU-01':'재무팀','BAU-02':'DevOps','BAU-03':'Data팀','BAU-04':'서비스운영팀','BAU-05':'Data팀','BAU-06':'서비스운영팀','BAU-07':'전 부서','BAU-08':'서비스운영팀','BAU-09':'DevOps','BAU-10':'DevOps','BAU-11':'정보보안팀','BAU-12':'정보보안팀','BAU-13':'서비스운영팀','BAU-14':'Data팀','BAU-15':'서비스운영팀','BAU-16':'DevOps',
+  'AUD-01':'정보보안팀','AUD-02':'Compliance(교차검증 기능)','AUD-03':'Compliance(교차검증 기능)','AUD-04':'해당 업무부서','AUD-05':'정보보안팀','AUD-06':'Compliance(교차검증 기능)',
+};
+
 export function getMoinWorkOrganization(work: OperatingWork): MoinWorkOrganization {
   const sourceDepartments = work.department.split('·');
   const departments = new Set<string>();
@@ -35,6 +47,8 @@ export function getMoinWorkOrganization(work: OperatingWork): MoinWorkOrganizati
     else if (includesAny(department, ['준법', 'Compliance'])) departments.add('Compliance');
     else if (department.includes('경영지원')) departments.add('경영지원팀');
     else if (includesAny(department, ['서비스소유', '서비스운영'])) departments.add('서비스운영팀');
+    else if (includesAny(department, ['BCM', 'Operation', '고객지원', '금융사고대응', '외주관리'])) departments.add('서비스운영팀');
+    else if (includesAny(department, ['데이터'])) departments.add('Data팀');
     else if (department.includes('구매')) departments.add('경영지원팀(구매 기능)');
     else if (department.includes('감사')) departments.add('Compliance(교차검증 기능)');
     else if (includesAny(department, ['CEO', '대표이사'])) departments.add('CEO 직속');
@@ -44,29 +58,20 @@ export function getMoinWorkOrganization(work: OperatingWork): MoinWorkOrganizati
   if (departments.size === 0) departments.add('정보보안팀');
   const mapped = [...departments];
   const ownerText = `${work.owner} ${work.domain} ${work.activity}`;
-  const preferredOwner = includesAny(ownerText, ['계정 신청', '계정 통제', '비밀번호·MFA', '접근권한 정기', '접근통제 점검', '원격·인터넷 접속', '로그원 정의·수집', '패치 SLA', '백업 수행', '키 생명주기', '클라우드·SaaS 설정'])
-    ? 'DevOps'
-    : includesAny(ownerText, ['소스코드', '오픈소스', '보안설계', '개발·시험·운영 분리', '배포 승인', '신규·변경 서비스'])
-      ? 'Platform팀'
-      : includesAny(ownerText, ['자산 식별', '자산 분류', '자산 도입·변경·이관·폐기'])
-        ? 'DevOps'
-        : includesAny(ownerText, ['HR 담당', '교육 실시', '교육 계획'])
-    ? 'HR'
-    : includesAny(ownerText, ['시설담당', '물리보안담당', '보호구역', 'CCTV', '환경통제'])
-      ? '경영지원팀'
-      : includesAny(ownerText, ['문서관리담당'])
-        ? '경영지원팀'
-        : includesAny(ownerText, ['법무'])
-          ? '법무팀'
-          : includesAny(ownerText, ['독립감사', '준법'])
-            ? 'Compliance(교차검증 기능)'
-            : includesAny(ownerText, ['IT 운영담당', 'DevOps', '자산관리담당', '복구시험'])
-              ? 'DevOps'
-              : includesAny(ownerText, ['개발책임자', '서비스소유자', 'Product', '개발·변경'])
-                ? 'Platform팀'
-                : includesAny(ownerText, ['고객지원', '민원'])
-                  ? '서비스운영팀'
-                  : '정보보안팀';
+  const preferredOwner = explicitExecutionOwners[work.id]
+    ?? (work.id.startsWith('HR-')?'HR':undefined)
+    ?? (work.id.startsWith('IAM-')?'DevOps':undefined)
+    ?? (work.id.startsWith('PHY-')?'경영지원팀':undefined)
+    ?? (work.id.startsWith('DEV-')?'Platform팀':undefined)
+    ?? (work.id.startsWith('AUD-')?'Compliance(교차검증 기능)':undefined)
+    ?? (includesAny(ownerText,['독립감사','준법'])?'Compliance(교차검증 기능)':undefined)
+    ?? (includesAny(ownerText,['시설담당','물리보안담당','문서관리담당'])?'경영지원팀':undefined)
+    ?? (includesAny(ownerText,['법무'])?'법무팀':undefined)
+    ?? (includesAny(ownerText,['IT 운영담당','DevOps','자산관리담당'])?'DevOps':undefined)
+    ?? (includesAny(ownerText,['개발책임자','서비스소유자','Product','개발·변경'])?'Platform팀':undefined)
+    ?? (includesAny(ownerText,['GRC','SecOps','보안팀','보안엔지니어','인증'])?'정보보안팀':undefined)
+    ?? mapped.find(department=>!['정보보안팀','전 부서'].includes(department))
+    ?? '정보보안팀';
   const ownerDepartment = preferredOwner;
   if (!mapped.includes(ownerDepartment)) mapped.unshift(ownerDepartment);
   const cooperatingDepartments = mapped.filter(department => department !== ownerDepartment);

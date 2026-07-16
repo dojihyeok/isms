@@ -30,6 +30,9 @@ export const getOperatingWorkWbs = (work: OperatingWork): WorkBreakdownItem[] =>
   technicalExecutionRules.forEach(([pattern,departments])=>{
     if(pattern.test(work.activity)) departments.filter(department=>collaborators.includes(department)).forEach(addExecutionDepartment);
   });
+  if(/^BCP-0[12]$/.test(work.id)) ['각 핵심업무 부서','DevOps','Platform팀','Data팀'].forEach(addExecutionDepartment);
+  if(work.id==='BCP-03') ['서비스운영팀','각 핵심업무 부서','Platform팀','Data팀','정보보안팀'].forEach(addExecutionDepartment);
+  if(work.id.startsWith('APP-')) collaborators.forEach(addExecutionDepartment);
   if(work.fss.length){
     addExecutionDepartment('정보보안팀');
     work.fss.forEach(reference=>{
