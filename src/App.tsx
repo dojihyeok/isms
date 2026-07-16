@@ -59,13 +59,55 @@ import type {
 import { usePersistentState } from "./hooks/usePersistentState";
 import { SecurityOrganizationPage } from "./components/SecurityOrganizationPage";
 import { GovernanceEvidenceRepository } from "./components/GovernanceEvidenceRepository";
-import { getOperatingWorkBasis, operatingWorkMaster, operatingWorkSummary } from "./data/operatingWorkMaster";
+import { getOperatingWorkBasis, operatingWorkMaster, operatingWorkSourceRefs, operatingWorkSummary } from "./data/operatingWorkMaster";
 import { getMoinSecurityAssignee, getMoinWorkOrganization } from "./data/moinOrganizationMapping";
 import { getOperatingWorkWbs, operatingWorkWbsSummary } from "./data/operatingWorkWbs";
+import requirementsCatalog from "../refer/requirements.json";
 
 // ==========================================
 // 2. Initial control and workflow data
 // ==========================================
+
+const controlCheckItems = new Map(
+  requirementsCatalog.map(requirement => [requirement.req_id, requirement.check_items]),
+);
+
+const getInternalPolicyClauses = (work: (typeof operatingWorkMaster)[number]) => {
+  const acceptsCode = (code: string) => work.internal.some(item => item === code || (item === 'SG01~SG19' && code.startsWith('SG')));
+  const clauses=isoControls
+    .filter(control=>control.mapped_isms.some(mapping=>work.isms.includes(mapping.req_id)))
+    .flatMap(control=>control.policy.split(/\s+-\s+(?=(?:SP|SG)\d{2})/).map(item=>item.replace(/^\s*-\s*/, '').trim()))
+    .filter(Boolean)
+    .filter(item=>acceptsCode(item.match(/^(SP|SG)\d{2}/)?.[0]??''));
+  const unique=[...new Set(clauses)];
+  const coveredCodes=new Set(unique.map(item=>item.match(/^(SP|SG)\d{2}/)?.[0]).filter(Boolean));
+  const unresolved=work.internal.filter(item=>item!=='SG01~SG19'&&!coveredCodes.has(item)).map(item=>`${item} (적용 조항 확인 필요)`);
+  return [...unique,...unresolved];
+};
+
+const fssCheckBasis = (reference: string) => {
+  const source='금감원 최근 AI 위협에 따른 체계 강화 점검.xlsx / 시트 5.자체점검 체크리스트';
+  if(reference==='CPC 요청') return '금융감독원 자료제출 요청 / CPC 요청서·제출기한·요구자료 기준';
+  if(reference.includes('전 영역')) return `${source} / 1~5 전 영역 — IT위험·IT자산·취약점·위협대응·사고대응 종합 점검`;
+  if(/^1/.test(reference)) return `${source} / ${reference} — IT위험 관리체계·승인·정기검토 점검`;
+  if(/^2/.test(reference)) return `${source} / ${reference} — IT자산 분류·생명주기·책임자·클라우드 관리 점검`;
+  if(/^3/.test(reference)) return `${source} / ${reference} — 취약점 진단·패치·보완계획·재점검 점검`;
+  if(/^4/.test(reference)) return `${source} / ${reference} — 보안관제·로그분석·이상징후 탐지 점검`;
+  if(/^5/.test(reference)) return `${source} / ${reference} — 침해사고·업무연속성·복구훈련 점검`;
+  return `${source} / ${reference}`;
+};
+
+const getApplicationSourceDepartment = (output: string) => {
+  if(/매출|수수료/.test(output)) return '재무팀';
+  if(/임직원|인원 수|조직도|직무/.test(output)) return 'HR';
+  if(/이용자 수|정보주체 수|개인정보 항목|개인정보 흐름/.test(output)) return '서비스운영팀·Data팀·정보보안팀(개인정보)';
+  if(/시스템|네트워크|서버|장비|자산|DMZ|VPN/.test(output)) return 'DevOps·Platform팀·Data팀';
+  if(/외부위탁|수탁사|계약/.test(output)) return '경영지원팀(구매)·법무팀·서비스 소유부서';
+  if(/법무검토|법적 요구사항/.test(output)) return '법무팀·Compliance';
+  if(/사업자등록증|대표자|제출공문/.test(output)) return '재무팀·CEO 직속';
+  if(/위험|취약점|통제|운영명세|보호활동|증적/.test(output)) return '정보보안팀·해당 통제 수행부서';
+  return '정보보안팀·관련 업무부서';
+};
 
 const initialRequirements: Requirement[] = [
   {
@@ -1727,7 +1769,7 @@ const operatingMasterTasks: SecurityTask[] = operatingWorkMaster.flatMap(work =>
     owner_department: organization.ownerDepartment,
     cooperating_departments: organization.cooperatingDepartments,
     organization_mapping_source: organization.source,
-    description: `${operatingYear}년 ${occurrence.label} 운영업무 · 원 주기: ${work.cycle} · ISMS-P ${work.isms.join(", ")} / 전자금융감독규정 ${work.efr} / 내부문서 ${work.internal.join(", ")}`,
+    description: `${operatingYear}년 ${occurrence.label} 운영업무 · 원 주기: ${work.cycle} · ISMS-P ${work.isms.join(", ")} / 전자금융감독규정 ${work.efr} / 내부 규정·지침 ${getInternalPolicyClauses(work).join(", ")}`,
     checklists: [
       { text: "대상·범위 및 전기 미흡사항 확인", checked: false },
       { text: `${organization.ownerDepartment} 업무 수행 및 결과 기록`, checked: false },
@@ -2956,20 +2998,31 @@ export default function App() {
   }, [isoMappingFilter, organizationMappingCorrections]);
 
   const downloadAnnualWorkExcel = () => {
-    const controlRows: unknown[][] = [['통제ID','통제명','통제 요구내용','점검주기','연결 운영업무','담당자가 이 업무를 해야 하는 이유']];
+    const controlRows: unknown[][] = [['통제ID','통제명','통제 요구내용','주요 점검 항목','점검주기','연결 운영업무','담당자가 이 업무를 해야 하는 이유']];
     initialRequirements.forEach(requirement => {
       const works=operatingWorkMaster.filter(work=>work.isms.includes(requirement.req_id));
-      controlRows.push([requirement.req_id,requirement.subject,requirement.detail_desc,requirement.compliance_cycle,works.map(work=>`${work.id} ${work.activity}`).join(' | ')||'운영업무 매핑 필요',works.length?`${requirement.subject} 통제의 요구사항을 충족하고 심사 시 이행 사실을 입증하기 위해 연결된 운영업무를 수행합니다.`:'연결 운영업무를 지정해야 합니다.']);
+      const checkItems=controlCheckItems.get(requirement.req_id)??[];
+      controlRows.push([requirement.req_id,requirement.subject,requirement.detail_desc,checkItems.map((item,index)=>`${index+1}. ${item}`).join(' | '),requirement.compliance_cycle,works.map(work=>`${work.id} ${work.activity}`).join(' | ')||'운영업무 매핑 필요',works.length?`${requirement.subject} 통제의 요구사항을 충족하고 심사 시 이행 사실을 입증하기 위해 연결된 운영업무를 수행합니다.`:'연결 운영업무를 지정해야 합니다.']);
     });
-    const wbsRows: unknown[][] = [['조회연도','업무ID','영역','업무명','수행주기','통제ID','통제명','통제 요구내용','업무 수행이유','전자금융·관련법','내부문서','금감원 점검','WBS ID','단계','세부작업','완료조건','필수산출물','R 수행','보안팀 담당자','A 최종책임','C 협의','I 보고']];
+    const wbsRows: unknown[][] = [['조회연도','업무ID','영역','업무명','수행주기','통제ID','통제명','통제 요구내용','주요 점검 항목','업무 수행이유','전자금융감독규정','내부 규정·지침 실제 조항','금감원 점검번호','금감원 점검 근거','WBS ID','단계','세부작업','완료조건','필수산출물','R 수행','보안팀 담당자','A 최종책임','C 협의','I 보고']];
     annualWorkRows.forEach(({work}) => {
       const requirements=work.isms.map(reqId=>initialRequirements.find(requirement=>requirement.req_id===reqId)).filter((requirement): requirement is Requirement=>Boolean(requirement));
       const controlNames=requirements.map(requirement=>`${requirement.req_id} ${requirement.subject}`).join(' | ');
       const controlDetails=requirements.map(requirement=>`${requirement.req_id}: ${requirement.detail_desc}`).join(' | ');
+      const checkItems=requirements.flatMap(requirement=>(controlCheckItems.get(requirement.req_id)??[]).map((item,index)=>`${requirement.req_id}-${index+1}. ${item}`)).join(' | ');
+      const internalClauses=getInternalPolicyClauses(work).join(' | ');
+      const fssBasis=work.fss.map(fssCheckBasis).join(' | ');
       const reason=`${controlNames||work.isms.join(', ')}의 요구사항을 충족하고, ${work.activity}의 수행 결과를 증적으로 남기기 위해 수행합니다.`;
       getOperatingWorkWbs(work).forEach(item => wbsRows.push([
-        annualTaskYear,work.id,work.domain,work.activity,work.cycle,work.isms.join(', '),requirements.map(requirement=>requirement.subject).join(' | '),controlDetails,reason,work.efr,work.internal.join(', '),work.fss.join(', '),item.id,item.phase,item.task,item.completionCriteria,item.requiredOutput,item.responsible,item.responsible.includes('정보보안팀')?getMoinSecurityAssignee(work):'해당 없음',item.accountable,item.consulted.join(' · '),item.informed.join(' · '),
+        annualTaskYear,work.id,work.domain,work.activity,work.cycle,work.isms.join(', '),requirements.map(requirement=>requirement.subject).join(' | '),controlDetails,checkItems,reason,work.efr,internalClauses,work.fss.join(', '),fssBasis,item.id,item.phase,item.task,item.completionCriteria,item.requiredOutput,item.responsible,item.responsible.includes('정보보안팀')?getMoinSecurityAssignee(work):'해당 없음',item.accountable,item.consulted.join(' · '),item.informed.join(' · '),
       ]));
+    });
+    const fssRows: unknown[][] = [['업무ID','업무명','금감원 점검번호','근거 파일·시트·점검 취지']];
+    annualWorkRows.forEach(({work})=>work.fss.forEach(reference=>fssRows.push([work.id,work.activity,reference,fssCheckBasis(reference)])));
+    const applicationRows: unknown[][] = [['업무ID','인증 준비업무','제출 자료·확인정보','자료 제출부서(R)','취합·검증','검토','최종 승인','완료조건','근거']];
+    operatingWorkMaster.filter(work=>work.id.startsWith('APP-')).forEach(work=>{
+      const organization=getMoinWorkOrganization(work);
+      work.outputs.forEach(output=>applicationRows.push([work.id,work.activity,output,getApplicationSourceDepartment(output),organization.ownerDepartment,organization.reviewerDepartment,organization.approver,`${output}의 기준일·산정범위·원천자료·작성자·검토자가 확인되고 신청서 또는 제출 증빙과 일치함`,(operatingWorkSourceRefs[work.id]??[]).join(' | ')]));
     });
     const scheduleRows: unknown[][] = [['조회연도','수행건ID','업무ID','업무명','수행기간','마감일','상태','주관부서','협업부서','검토부서','최종승인']];
     annualWorkRows.forEach(({work,occurrences}) => {
@@ -2978,7 +3031,7 @@ export default function App() {
     });
     const updateRows: unknown[][] = [['업무ID','상태','마감일','주관부서','수행결과','업데이트 안내']];
     tasks.filter(task=>task.task_id.startsWith(`AW-${operatingYear}-`)).forEach(task=>updateRows.push([task.task_id,task.status,task.due_date,task.owner_department||task.assignee_name,task.description||'','마감일·주관부서·수행결과와 진행중/미흡 상태만 업데이트. 완료·승인대기는 포털 증적·결재 절차로만 변경']));
-    const xml=spreadsheetWorkbook([{name:'통제 설명',rows:controlRows},{name:'통합 WBS 업무매핑',rows:wbsRows},{name:'연간수행현황',rows:scheduleRows},{name:'업데이트양식',rows:updateRows}]);
+    const xml=spreadsheetWorkbook([{name:'부서별 인증준비',rows:applicationRows},{name:'통제 설명',rows:controlRows},{name:'통합 WBS 업무매핑',rows:wbsRows},{name:'금감원 점검 근거',rows:fssRows},{name:'연간수행현황',rows:scheduleRows},{name:'업데이트양식',rows:updateRows}]);
     const url=URL.createObjectURL(new Blob([xml],{type:'application/vnd.ms-excel;charset=utf-8'}));
     const anchor=document.createElement('a');anchor.href=url;anchor.download=`MOIN_정보보호_통합_WBS_${annualTaskYear}.xls`;anchor.click();URL.revokeObjectURL(url);
     showToast(`${annualTaskYear}년 통제 설명·운영업무·WBS 통합 Excel을 생성했습니다.`, 'success');
@@ -4708,7 +4761,7 @@ export default function App() {
                       <span className="annual-expand-hint">클릭하여 수행 건 선택</span>
                     </summary>
                     <div className="annual-work-detail">
-                      <div className="annual-work-meta"><span><b>필수 산출물</b>{work.outputs.join(' · ')}</span><span><b>업무 근거 매핑</b>{getOperatingWorkBasis(work).map(basis=><small key={basis}>{basis}</small>)}</span><span><b>통제 요구와 수행 이유</b>{work.isms.map(reqId=>initialRequirements.find(requirement=>requirement.req_id===reqId)).filter((requirement): requirement is Requirement=>Boolean(requirement)).map(requirement=><small key={requirement.req_id}><strong>{requirement.req_id} · {requirement.subject}</strong> — {requirement.detail_desc}</small>)}<small>위 통제 요구사항을 충족하고 심사 시 실제 이행 결과를 증적으로 제시하기 위해 이 업무와 WBS를 수행합니다.</small></span></div>
+                      <div className="annual-work-meta"><span><b>필수 산출물</b>{work.outputs.join(' · ')}</span><span><b>업무 근거 매핑</b>{getOperatingWorkBasis(work).map(basis=><small key={basis}>{basis}</small>)}</span><span><b>내부 규정·지침 실제 조항</b>{getInternalPolicyClauses(work).map(clause=><small key={clause}>{clause}</small>)}</span>{work.fss.length>0&&<span><b>금감원 점검 근거</b>{work.fss.map(reference=><small key={reference}>{fssCheckBasis(reference)}</small>)}</span>}<span><b>통제 요구·주요 점검 항목·수행 이유</b>{work.isms.map(reqId=>initialRequirements.find(requirement=>requirement.req_id===reqId)).filter((requirement): requirement is Requirement=>Boolean(requirement)).map(requirement=><small key={requirement.req_id}><strong>{requirement.req_id} · {requirement.subject}</strong> — {requirement.detail_desc}{(controlCheckItems.get(requirement.req_id)??[]).map((item,index)=><em key={item}>점검 {index+1}. {item}</em>)}</small>)}<small>위 통제 요구사항과 주요 점검 항목을 충족하고 심사 시 실제 이행 결과를 증적으로 제시하기 위해 이 업무와 WBS를 수행합니다.</small></span></div>
                       <div className="wbs-heading"><div><b>Work Breakdown Structure</b><span>{getOperatingWorkWbs(work).length}개 작업패키지 · 각 작업의 완료조건과 조직 책임을 기준으로 수행</span></div><div className="raci-legend"><span>R 수행</span><span>A 최종책임</span><span>C 협의</span><span>I 보고</span></div></div>
                       <div className="wbs-table-wrap"><table className="wbs-table"><thead><tr><th>WBS</th><th>단계</th><th>세부 작업</th><th>완료조건</th><th>필수 산출물</th><th>R 수행부서</th><th>보안팀 담당자</th><th>A 최종책임</th><th>C 협의</th><th>I 보고</th></tr></thead><tbody>{getOperatingWorkWbs(work).map(item=><tr key={item.id}><td>{item.id}</td><td><span className={`wbs-phase phase-${item.phase}`}>{item.phase}</span></td><td><strong>{item.task}</strong></td><td>{item.completionCriteria}</td><td>{item.requiredOutput}</td><td>{item.responsible}</td><td>{item.responsible.includes('정보보안팀')?getMoinSecurityAssignee(work):'—'}</td><td>{item.accountable}</td><td>{item.consulted.join(' · ')||'—'}</td><td>{item.informed.join(' · ')||'—'}</td></tr>)}</tbody></table></div>
                       <h4 className="annual-occurrence-title">{annualTaskYear}년 {annualTaskYear===operatingYear?'실제 수행 건 선택':'반복 일정 계획'}</h4>
