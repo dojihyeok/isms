@@ -1801,7 +1801,7 @@ const operatingMasterTasks: SecurityTask[] = operatingWorkMaster.flatMap(work =>
     organization_mapping_source: organization.source,
     description: `${operatingYear}년 ${occurrence.label} 운영업무 · 원 주기: ${work.cycle} · ISMS-P ${work.isms.join(", ")} / 전자금융감독규정 ${work.efr} / 내부 규정·지침 ${getInternalPolicyClauses(work).join(", ")}`,
     checklists: [
-      { text: "대상·범위 및 전기 미흡사항 확인", checked: false },
+      { text: "대상·범위·기준일 및 현재 운영현황 확인", checked: false },
       { text: `${organization.ownerDepartment} 업무 수행 및 결과 기록`, checked: false },
       ...work.outputs.map(output => ({
         text: `${output} 작성·등록`,
@@ -2888,7 +2888,7 @@ export default function App() {
     "2.2.1": "주요 직무자 목록 분기 업데이트 → 시스템 자동 연동",
     "2.5.3": "권한 검토 결과를 본 포털에서 직접 결재 처리",
     "2.5.6": "접근권한 이력 자동 수집 및 이상징후 알람 고도화",
-    "2.9.7": "로그 관리 현황 대시보드 시각화 개선",
+    "2.9.7": "정보자산 재사용·폐기 전 데이터 삭제와 복구 불가 확인 절차 운영",
   };
 
   const GUIDE_MAP: Record<string, string> = {
@@ -2899,7 +2899,7 @@ export default function App() {
     "2.5.1": "계정관리 절차서 §3, 최소권한 원칙",
     "2.5.3": "사용자 권한 검토 반기/분기 시행",
     "2.5.6": "접근권한 이력관리 정책 §5.2",
-    "2.9.7": "로그 수집·보존 정책 6개월 이상",
+    "2.9.7": "정보자산 재사용·폐기 절차, 데이터 완전삭제 및 폐기증적 확인",
   };
 
   // ── ISO 27001 필터링된 통제항목 ──
@@ -3028,6 +3028,17 @@ export default function App() {
   }, [isoMappingFilter, organizationMappingCorrections]);
 
   const downloadAnnualWorkExcel = async () => {
+    const exportAnnualWorkRows=operatingWorkMaster.map(work=>({
+      work,
+      occurrences: annualTaskYear===operatingYear
+        ? tasks.filter(task=>task.task_id.includes(`-${work.id}-`))
+        : annualOccurrences(work.cycle,annualTaskYear).map(occurrence=>({
+            task_id:`PLAN-${annualTaskYear}-${work.id}-${occurrence.code}`,
+            title:`[${occurrence.label}] ${work.activity}`,
+            due_date:occurrence.due,
+            status:'계획',
+          })),
+    }));
     const controlRows: unknown[][] = [['통제 ID','통제명','통제 요구내용','주요 점검 항목','점검 주기','연결 운영업무','업무 수행 이유']];
     initialRequirements.forEach(requirement => {
       const works=operatingWorkMaster.filter(work=>work.isms.includes(requirement.req_id));
@@ -3035,7 +3046,7 @@ export default function App() {
       controlRows.push([requirement.req_id,requirement.subject,requirement.detail_desc,checkItems.map((item,index)=>`${index+1}. ${item}`).join(' | '),requirement.compliance_cycle,works.map(work=>`${work.id} ${work.activity}`).join(' | ')||'운영업무 매핑 필요',works.length?`${requirement.subject} 통제의 요구사항을 충족하고 심사 시 이행 사실을 입증하기 위해 연결된 운영업무를 수행합니다.`:'연결 운영업무를 지정해야 합니다.']);
     });
     const wbsRows: unknown[][] = [['조회 연도','업무 ID','영역','업무명','수행 주기','통제 ID','통제명','통제 요구내용','주요 점검 항목','업무 수행 이유','전자금융감독규정','내부 규정·지침 실제 조항','금감원 점검번호','금감원 점검 근거','WBS ID','단계','세부 작업','완료 조건','필수 산출물','R 수행부서','보안팀 담당자','A 최종책임','C 협의','I 보고']];
-    annualWorkRows.forEach(({work}) => {
+    exportAnnualWorkRows.forEach(({work}) => {
       const requirements=work.isms.map(reqId=>initialRequirements.find(requirement=>requirement.req_id===reqId)).filter((requirement): requirement is Requirement=>Boolean(requirement));
       const controlNames=requirements.map(requirement=>`${requirement.req_id} ${requirement.subject}`).join(' | ');
       const controlDetails=requirements.map(requirement=>`${requirement.req_id}: ${requirement.detail_desc}`).join(' | ');
@@ -3048,19 +3059,22 @@ export default function App() {
       ]));
     });
     const fssRows: unknown[][] = [['업무 ID','업무명','금감원 점검번호','근거 파일·시트·점검 취지']];
-    annualWorkRows.forEach(({work})=>work.fss.forEach(reference=>fssRows.push([work.id,work.activity,reference,fssCheckBasis(reference)])));
+    exportAnnualWorkRows.forEach(({work})=>work.fss.forEach(reference=>fssRows.push([work.id,work.activity,reference,fssCheckBasis(reference)])));
     const applicationRows: unknown[][] = [['업무 ID','인증 준비업무','제출 자료·확인정보','자료 제출부서(R)','취합·검증','검토','최종 승인','완료 조건','근거']];
     operatingWorkMaster.filter(work=>work.id.startsWith('APP-')).forEach(work=>{
       const organization=getMoinWorkOrganization(work);
       work.outputs.forEach(output=>applicationRows.push([work.id,work.activity,output,getApplicationSourceDepartment(output),organization.ownerDepartment,organization.reviewerDepartment,organization.approver,`${output}의 기준일·산정범위·원천자료·작성자·검토자가 확인되고 신청서 또는 제출 증빙과 일치함`,(operatingWorkSourceRefs[work.id]??[]).join(' | ')]));
     });
     const scheduleRows: unknown[][] = [['조회연도','수행건ID','업무ID','업무명','수행기간','마감일','상태','주관부서','협업부서','검토부서','최종승인']];
-    annualWorkRows.forEach(({work,occurrences}) => {
+    exportAnnualWorkRows.forEach(({work,occurrences}) => {
       const organization=getMoinWorkOrganization(work);
       occurrences.forEach(task=>scheduleRows.push([annualTaskYear,task.task_id,work.id,work.activity,task.title.match(/^\[([^\]]+)\]/)?.[1]||'',task.due_date,annualTaskYear===operatingYear?task.status:'계획',organization.ownerDepartment,organization.cooperatingDepartments.join(' · '),organization.reviewerDepartment,organization.approver]));
     });
-    const updateRows: unknown[][] = [['업무ID','상태','마감일','주관부서','수행결과','업데이트 안내']];
-    tasks.filter(task=>task.task_id.startsWith(`AW-${operatingYear}-`)).forEach(task=>updateRows.push([task.task_id,task.status,task.due_date,task.owner_department||task.assignee_name,task.description||'','마감일·주관부서·수행결과와 진행중/미흡 상태만 업데이트. 완료·승인대기는 포털 증적·결재 절차로만 변경']));
+    const updateRows: unknown[][] = [['수행건ID','업무ID','업무명','상태','마감일','주관부서','수행결과','업데이트 안내']];
+    tasks.filter(task=>task.task_id.startsWith(`AW-${operatingYear}-`)).forEach(task=>{
+      const work=operatingWorkMaster.find(item=>task.task_id.includes(`-${item.id}-`));
+      updateRows.push([task.task_id,work?.id??'',work?.activity??task.title,task.status,task.due_date,task.owner_department||task.assignee_name,task.description||'','마감일·주관부서·수행결과와 진행중/미흡 상태만 업데이트. 완료·승인대기는 포털 증적·결재 절차로만 변경']);
+    });
     const file=await spreadsheetWorkbook([{name:'부서별 인증준비',rows:applicationRows},{name:'통제 설명',rows:controlRows},{name:'통합 WBS 업무매핑',rows:wbsRows},{name:'금감원 점검 근거',rows:fssRows},{name:'연간수행현황',rows:scheduleRows},{name:'업데이트양식',rows:updateRows}]);
     const url=URL.createObjectURL(new Blob([file],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}));
     const anchor=document.createElement('a');anchor.href=url;anchor.download=`MOIN_정보보호_통합_WBS_${annualTaskYear}.xlsx`;anchor.click();URL.revokeObjectURL(url);
@@ -3079,10 +3093,10 @@ export default function App() {
     const rows:string[][]=[];
     sheet.eachRow(row=>rows.push(Array.from({length:row.cellCount},(_,index)=>cellText(row.getCell(index+1).value))));
     const headers=rows[0]||[]; const index=(name:string)=>headers.indexOf(name);
-    if(index('업무ID')<0){showToast('업무ID 열이 없어 업데이트할 수 없습니다.','warning');return;}
+    if(index('수행건ID')<0){showToast('수행건ID 열이 없어 업데이트할 수 없습니다.','warning');return;}
     const allowedStatuses=new Set(['완료','승인대기','진행중','미흡']);
     const allowedDepartments=['정보보안팀','DevOps','Platform팀','Data팀','HR','경영지원팀','법무팀','Compliance','서비스운영팀','CEO 직속'];
-    const updates=new Map(rows.slice(1).filter(row=>row[index('업무ID')]?.startsWith(`AW-${operatingYear}-`)).map(row=>[row[index('업무ID')],row]));
+    const updates=new Map(rows.slice(1).filter(row=>row[index('수행건ID')]?.startsWith(`AW-${operatingYear}-`)).map(row=>[row[index('수행건ID')],row]));
     const validUpdates=new Map<string,string[]>(); let rejected=0;
     updates.forEach((row,taskId)=>{const status=row[index('상태')];const due=row[index('마감일')];const department=row[index('주관부서')];const existing=tasks.find(task=>task.task_id===taskId);const protectedTransition=(status==='완료'&&existing?.status!=='완료')||(status==='승인대기'&&existing?.status!=='승인대기');if((status&&!allowedStatuses.has(status))||(due&&!/^\d{4}-\d{2}-\d{2}$/.test(due))||(department&&!allowedDepartments.some(item=>department.startsWith(item)))||protectedTransition)rejected+=1;else validUpdates.set(taskId,row);});
     const updated=tasks.filter(task=>validUpdates.has(task.task_id)).length;
