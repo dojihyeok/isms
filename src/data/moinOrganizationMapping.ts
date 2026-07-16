@@ -44,7 +44,13 @@ export function getMoinWorkOrganization(work: OperatingWork): MoinWorkOrganizati
   if (departments.size === 0) departments.add('정보보안팀');
   const mapped = [...departments];
   const ownerText = `${work.owner} ${work.domain} ${work.activity}`;
-  const preferredOwner = includesAny(ownerText, ['HR 담당', '교육 실시', '교육 계획'])
+  const preferredOwner = includesAny(ownerText, ['계정 신청', '계정 통제', '비밀번호·MFA', '접근권한 정기', '접근통제 점검', '원격·인터넷 접속', '로그원 정의·수집', '패치 SLA', '백업 수행', '키 생명주기', '클라우드·SaaS 설정'])
+    ? 'DevOps'
+    : includesAny(ownerText, ['소스코드', '오픈소스', '보안설계', '개발·시험·운영 분리', '배포 승인', '신규·변경 서비스'])
+      ? 'Platform팀'
+      : includesAny(ownerText, ['자산 식별', '자산 분류', '자산 도입·변경·이관·폐기'])
+        ? 'DevOps'
+        : includesAny(ownerText, ['HR 담당', '교육 실시', '교육 계획'])
     ? 'HR'
     : includesAny(ownerText, ['시설담당', '물리보안담당', '보호구역', 'CCTV', '환경통제'])
       ? '경영지원팀'
@@ -54,7 +60,7 @@ export function getMoinWorkOrganization(work: OperatingWork): MoinWorkOrganizati
           ? '법무팀'
           : includesAny(ownerText, ['독립감사', '준법'])
             ? 'Compliance(교차검증 기능)'
-            : includesAny(ownerText, ['IT 운영담당', 'DevOps', '자산관리담당', '백업', '복구시험'])
+            : includesAny(ownerText, ['IT 운영담당', 'DevOps', '자산관리담당', '복구시험'])
               ? 'DevOps'
               : includesAny(ownerText, ['개발책임자', '서비스소유자', 'Product', '개발·변경'])
                 ? 'Platform팀'

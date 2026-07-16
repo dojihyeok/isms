@@ -1644,8 +1644,20 @@ const generateTaskSuffix = () => 100 + Math.floor(Math.random() * 900);
 
 const escapeSpreadsheetXml = (value: unknown) => String(value ?? '')
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-const spreadsheetSheet = (name: string, rows: unknown[][]) => `<Worksheet ss:Name="${escapeSpreadsheetXml(name)}"><Table>${rows.map((row,index)=>`<Row>${row.map(value=>`<Cell${index===0?' ss:StyleID="Header"':''}><Data ss:Type="String">${escapeSpreadsheetXml(value)}</Data></Cell>`).join('')}</Row>`).join('')}</Table></Worksheet>`;
-const spreadsheetWorkbook = (sheets: {name:string;rows:unknown[][]}[]) => `<?xml version="1.0"?><?mso-application progid="Excel.Sheet"?><Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"><Styles><Style ss:ID="Default"><Alignment ss:Vertical="Top"/><Font ss:FontName="Arial" ss:Size="10"/></Style><Style ss:ID="Header"><Font ss:Bold="1"/><Interior ss:Color="#DCE6F1" ss:Pattern="Solid"/></Style></Styles>${sheets.map(sheet=>spreadsheetSheet(sheet.name,sheet.rows)).join('')}</Workbook>`;
+const spreadsheetColumnWidth = (rows: unknown[][], columnIndex: number) => {
+  const header=String(rows[0]?.[columnIndex]??'');
+  const longest=rows.slice(0,200).reduce((max,row)=>Math.max(max,String(row[columnIndex]??'').split(/\r?\n| \| /).reduce((lineMax,line)=>Math.max(lineMax,line.length),0)),header.length);
+  const longText=/내용|항목|이유|근거|조항|업무명|세부작업|완료조건|산출물|부서/.test(header);
+  return Math.min(longText?280:180,Math.max(/ID|번호|연도|상태/.test(header)?68:85,longest*7+18));
+};
+const spreadsheetSheet = (name: string, rows: unknown[][]) => {
+  const columnCount=Math.max(1,...rows.map(row=>row.length));
+  const columns=Array.from({length:columnCount},(_,index)=>`<Column ss:AutoFitWidth="0" ss:Width="${spreadsheetColumnWidth(rows,index)}"/>`).join('');
+  const tableRows=rows.map((row,index)=>`<Row${index===0?' ss:Height="30"':''}>${row.map(value=>`<Cell ss:StyleID="${index===0?'Header':'Body'}"><Data ss:Type="String">${escapeSpreadsheetXml(value)}</Data></Cell>`).join('')}</Row>`).join('');
+  const filter=rows.length?`<AutoFilter x:Range="R1C1:R${rows.length}C${columnCount}" xmlns="urn:schemas-microsoft-com:office:excel"/>`:'';
+  return `<Worksheet ss:Name="${escapeSpreadsheetXml(name)}"><Table ss:DefaultRowHeight="18">${columns}${tableRows}</Table>${filter}<WorksheetOptions xmlns="urn:schemas-microsoft-com:office:excel"><FreezePanes/><FrozenNoSplit/><SplitHorizontal>1</SplitHorizontal><TopRowBottomPane>1</TopRowBottomPane><ActivePane>2</ActivePane><ProtectObjects>False</ProtectObjects><ProtectScenarios>False</ProtectScenarios></WorksheetOptions></Worksheet>`;
+};
+const spreadsheetWorkbook = (sheets: {name:string;rows:unknown[][]}[]) => `<?xml version="1.0"?><?mso-application progid="Excel.Sheet"?><Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet" xmlns:x="urn:schemas-microsoft-com:office:excel"><Styles><Style ss:ID="Default"><Alignment ss:Vertical="Top" ss:WrapText="1"/><Font ss:FontName="Arial" ss:Size="10"/></Style><Style ss:ID="Body"><Alignment ss:Vertical="Top" ss:WrapText="1"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#D9E2F3"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E2E8F0"/></Borders></Style><Style ss:ID="Header"><Alignment ss:Horizontal="Center" ss:Vertical="Center" ss:WrapText="1"/><Font ss:Bold="1" ss:Color="#FFFFFF"/><Interior ss:Color="#1F4E78" ss:Pattern="Solid"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#163A5C"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#FFFFFF"/></Borders></Style></Styles>${sheets.map(sheet=>spreadsheetSheet(sheet.name,sheet.rows)).join('')}</Workbook>`;
 
 const removeDemoIdentities = (text: string) =>
   text
