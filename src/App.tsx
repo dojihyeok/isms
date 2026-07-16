@@ -109,6 +109,47 @@ const getApplicationSourceDepartment = (output: string) => {
   return '정보보안팀·관련 업무부서';
 };
 
+const getControlOperatingWorks = (reqId: string) =>
+  operatingWorkMaster.filter(work=>work.isms.includes(reqId));
+
+const getTaskOperatingWork = (taskId: string) =>
+  operatingWorkMaster.find(work=>taskId.includes(`-${work.id}-`));
+
+const getTaskRequirementIds = (taskId: string) =>
+  getTaskOperatingWork(taskId)?.isms??[];
+
+const taskSupportsRequirement = (taskId: string, reqId: string) =>
+  getTaskRequirementIds(taskId).includes(reqId);
+
+const getControlActionPlan = (reqId: string) =>
+  getControlOperatingWorks(reqId).map(work=>{
+    const organization=getMoinWorkOrganization(work);
+    const outputRows=getOperatingWorkWbs(work).filter(item=>work.outputs.includes(item.requiredOutput));
+    return {
+      work,
+      organization,
+      action:`${work.id} ${work.activity}`,
+      outputs:work.outputs,
+      outputRows,
+      completion:outputRows.map(item=>`${item.requiredOutput}: ${item.completionCriteria}`),
+    };
+  });
+
+const getControlActionText = (reqId: string) =>
+  getControlActionPlan(reqId)
+    .map(item=>`${item.action} — ${item.organization.ownerDepartment} 주관, ${item.organization.cooperatingDepartments.join('·')||'협업부서 없음'} 협업`)
+    .join('\n');
+
+const getControlOutputText = (reqId: string) =>
+  getControlActionPlan(reqId)
+    .map(item=>item.outputRows.map(row=>`${item.work.id} ${row.requiredOutput} (R ${row.responsible})`).join(' | '))
+    .join('\n');
+
+const getControlCompletionText = (reqId: string) =>
+  getControlActionPlan(reqId)
+    .map(item=>`${item.work.id}: 필수 산출물 ${item.outputs.length}종의 항목별 완료조건 충족 → ${item.organization.reviewerDepartment} 검토 → ${item.organization.approver} 승인`)
+    .join('\n');
+
 const initialRequirements: Requirement[] = [
   {
     req_id: "1.1.1",
@@ -2634,8 +2675,8 @@ export default function App() {
   const validReqIds=new Set(initialRequirements.map(req=>req.req_id));
   const isoBaselineReqIds=new Set(isoControls.flatMap(control=>control.mapped_isms.map(item=>item.req_id)).filter(reqId=>validReqIds.has(reqId)));
   const currentVerifiedReqIds=new Set(evidences.filter(evidence=>evidence.verification_status==="검증완료"&&(evidence.source_type==="업로드"||evidence.created_at.includes("2026"))).map(evidence=>evidence.req_id).filter(reqId=>validReqIds.has(reqId)));
-  const executingReqIds=new Set(tasks.filter(task=>task.evidence_files.length>0||task.checklists.some(item=>item.checked)||task.status==="승인대기").map(task=>task.req_id).filter(reqId=>validReqIds.has(reqId)));
-  const pendingReqIds=new Set(tasks.filter(task=>task.status==="승인대기").map(task=>task.req_id).filter(reqId=>validReqIds.has(reqId)));
+  const executingReqIds=new Set(tasks.filter(task=>task.evidence_files.length>0||task.checklists.some(item=>item.checked)||task.status==="승인대기").flatMap(task=>getTaskRequirementIds(task.task_id)).filter(reqId=>validReqIds.has(reqId)));
+  const pendingReqIds=new Set(tasks.filter(task=>task.status==="승인대기").flatMap(task=>getTaskRequirementIds(task.task_id)).filter(reqId=>validReqIds.has(reqId)));
   const completedTaskCount = isoBaselineReqIds.size;
   const complianceRate = Math.round((completedTaskCount / totalReqCount) * 100);
 
@@ -2652,7 +2693,7 @@ export default function App() {
       return false;
 
     // 연계된 Task 조회
-    const linkedTask = tasks.find(t => t.req_id === req.req_id);
+    const linkedTask = tasks.find(task=>taskSupportsRequirement(task.task_id,req.req_id));
 
     // 2. 상태 필터
     if (filterStatus !== "all") {
@@ -2751,7 +2792,7 @@ export default function App() {
     if(matrixYear===2025)return hasIsoBaseline?{label:"ISO 27001 적합",tone:"completed",note:"2025 ISO 매핑 기준"}:{label:"ISMS 추가준비",tone:"pending",note:"ISO 직접대응 없음"};
     const linked=evidences.filter(evidence=>evidence.req_id===reqId&&evidence.verification_status!=="증적제외");
     const currentVerified=linked.filter(evidence=>evidence.verification_status==="검증완료"&&(evidence.source_type==="업로드"||evidence.created_at.includes("2026")));
-    const yearTasks=tasks.filter(task=>task.req_id===reqId&&task.task_id.includes("AW-2026-"));
+    const yearTasks=tasks.filter(task=>taskSupportsRequirement(task.task_id,reqId)&&task.task_id.includes("AW-2026-"));
     const hasExecution=yearTasks.some(task=>task.evidence_files.length>0||task.checklists.some(item=>item.checked)||task.status==="완료"||task.status==="승인대기");
     if(currentVerified.length>0)return{label:"현행화 완료",tone:"completed",note:`2026 검증증적 ${currentVerified.length}건`};
     if(hasExecution)return{label:"현행화 진행중",tone:"in-progress",note:"2026 수행이력 존재"};
@@ -2879,18 +2920,7 @@ export default function App() {
     });
   }, [getMatrixYearStatus]);
 
-  // ── To-Be / Guide 데이터 (SOA 운영현황 기반 또는 고정 가이드) ──
-  const TOBE_MAP: Record<string, string> = {
-    "1.1.1": "경영진 참여 보안위원회 월 1회 → 분기 1회 정례화",
-    "1.1.2": "CISO/CPO 법적 요건 충족 여부 연 1회 재검토",
-    "1.1.3": "보안 협의체 활동 내역 시스템 기록 전환",
-    "1.2.3": "위험 평가 결과물 포털 내 직접 등록 자동화",
-    "2.2.1": "주요 직무자 목록 분기 업데이트 → 시스템 자동 연동",
-    "2.5.3": "권한 검토 결과를 본 포털에서 직접 결재 처리",
-    "2.5.6": "접근권한 이력 자동 수집 및 이상징후 알람 고도화",
-    "2.9.7": "정보자산 재사용·폐기 전 데이터 삭제와 복구 불가 확인 절차 운영",
-  };
-
+  // ── Guide 데이터 (SOA 운영현황 기반 또는 고정 가이드) ──
   const GUIDE_MAP: Record<string, string> = {
     "1.1.1": "정보보호 규정 제1조, 이사회 보고 체계 확인",
     "1.1.2": "CISO 지정·신고 의무(전자금융거래법 §21의2)",
@@ -3039,13 +3069,13 @@ export default function App() {
             status:'계획',
           })),
     }));
-    const controlRows: unknown[][] = [['통제 ID','통제명','통제 요구내용','주요 점검 항목','점검 주기','연결 운영업무','업무 수행 이유']];
+    const controlRows: unknown[][] = [['통제 ID','통제명','통제 요구내용','주요 점검 항목','점검 주기','통제별 조치내용','수행부서','필수 산출물','완료 기준','업무 수행 이유']];
     initialRequirements.forEach(requirement => {
       const works=operatingWorkMaster.filter(work=>work.isms.includes(requirement.req_id));
       const checkItems=controlCheckItems.get(requirement.req_id)??[];
-      controlRows.push([requirement.req_id,requirement.subject,requirement.detail_desc,checkItems.map((item,index)=>`${index+1}. ${item}`).join(' | '),requirement.compliance_cycle,works.map(work=>`${work.id} ${work.activity}`).join(' | ')||'운영업무 매핑 필요',works.length?`${requirement.subject} 통제의 요구사항을 충족하고 심사 시 이행 사실을 입증하기 위해 연결된 운영업무를 수행합니다.`:'연결 운영업무를 지정해야 합니다.']);
+      controlRows.push([requirement.req_id,requirement.subject,requirement.detail_desc,checkItems.map((item,index)=>`${index+1}. ${item}`).join(' | '),requirement.compliance_cycle,getControlActionText(requirement.req_id),works.map(work=>{const organization=getMoinWorkOrganization(work);return `${work.id}: R ${organization.ownerDepartment} / C ${organization.cooperatingDepartments.join('·')||'—'} / 검토 ${organization.reviewerDepartment} / 승인 ${organization.approver}`}).join(' | '),getControlOutputText(requirement.req_id),getControlCompletionText(requirement.req_id),works.length?`${requirement.subject} 통제의 요구사항과 주요 점검 항목을 충족하고 실제 이행 결과를 증명하기 위해 연결된 조치내용을 수행합니다.`:'연결 운영업무를 지정해야 합니다.']);
     });
-    const wbsRows: unknown[][] = [['조회 연도','업무 ID','영역','업무명','수행 주기','통제 ID','통제명','통제 요구내용','주요 점검 항목','업무 수행 이유','전자금융감독규정','내부 규정·지침 실제 조항','금감원 점검번호','금감원 점검 근거','WBS ID','단계','세부 작업','완료 조건','필수 산출물','R 수행부서','보안팀 담당자','A 최종책임','C 협의','I 보고']];
+    const wbsRows: unknown[][] = [['조회 연도','업무 ID','영역','업무명','수행 주기','통제 ID','통제명','통제 요구내용','주요 점검 항목','통제별 조치내용','업무 수행 이유','전자금융감독규정','내부 규정·지침 실제 조항','금감원 점검번호','금감원 점검 근거','WBS ID','단계','세부 작업','완료 조건','필수 산출물','R 수행부서','보안팀 담당자','A 최종책임','C 협의','I 보고']];
     exportAnnualWorkRows.forEach(({work}) => {
       const requirements=work.isms.map(reqId=>initialRequirements.find(requirement=>requirement.req_id===reqId)).filter((requirement): requirement is Requirement=>Boolean(requirement));
       const controlNames=requirements.map(requirement=>`${requirement.req_id} ${requirement.subject}`).join(' | ');
@@ -3055,7 +3085,7 @@ export default function App() {
       const fssBasis=work.fss.map(fssCheckBasis).join(' | ');
       const reason=`${controlNames||work.isms.join(', ')}의 요구사항을 충족하고, ${work.activity}의 수행 결과를 증적으로 남기기 위해 수행합니다.`;
       getOperatingWorkWbs(work).forEach(item => wbsRows.push([
-        annualTaskYear,work.id,work.domain,work.activity,work.cycle,work.isms.join(', '),requirements.map(requirement=>requirement.subject).join(' | '),controlDetails,checkItems,reason,work.efr,internalClauses,work.fss.join(', '),fssBasis,item.id,item.phase,item.task,item.completionCriteria,item.requiredOutput,item.responsible,item.responsible.includes('정보보안팀')?getMoinSecurityAssignee(work):'해당 없음',item.accountable,item.consulted.join(' · '),item.informed.join(' · '),
+        annualTaskYear,work.id,work.domain,work.activity,work.cycle,work.isms.join(', '),requirements.map(requirement=>requirement.subject).join(' | '),controlDetails,checkItems,`${work.id} ${work.activity}`,reason,work.efr,internalClauses,work.fss.join(', '),fssBasis,item.id,item.phase,item.task,item.completionCriteria,item.requiredOutput,item.responsible,item.responsible.includes('정보보안팀')?getMoinSecurityAssignee(work):'해당 없음',item.accountable,item.consulted.join(' · '),item.informed.join(' · '),
       ]));
     });
     const fssRows: unknown[][] = [['업무 ID','업무명','금감원 점검번호','근거 파일·시트·점검 취지']];
@@ -3392,9 +3422,9 @@ export default function App() {
                               {[
                                 "번호",
                                 "요구사항 / 세부점검항목",
-                                "현황 분석 결과",
-                                "To-Be (개선목표)",
-                                "증적 자료",
+                                "통제별 조치내용",
+                                "완료 기준",
+                                "필수 산출물·증적",
                                 "상태",
                               ].map((col, i) => (
                                 <div
@@ -3419,9 +3449,11 @@ export default function App() {
 
                             {/* 행 목록 */}
                             {groupReqs.map(req => {
-                              const task = tasks.find(
-                                t => t.req_id === req.req_id
-                              );
+                              const controlPlan=getControlActionPlan(req.req_id);
+                              const linkedWorkIds=controlPlan.map(item=>item.work.id);
+                              const linkedTasks=tasks.filter(task=>linkedWorkIds.some(workId=>task.task_id.includes(`-${workId}-`)));
+                              const task=linkedTasks[0];
+                              const completionDetails=controlPlan.flatMap(item=>item.completion.map(completion=>`${item.work.id} ${completion}`));
                               const yearStatus=getMatrixYearStatus(req.req_id);
                               const status = yearStatus.label;
                               const isRowExpanded =
@@ -3442,7 +3474,7 @@ export default function App() {
                                       path: importedEvidence.file_path,
                                     }
                                   : null);
-                              const tobe = TOBE_MAP[req.req_id] || "—";
+                              const tobe = getControlCompletionText(req.req_id);
 
                               // ── SOA 기반 데이터 ──
                               const soaOpText = getSoaOperationText(req.req_id);
@@ -3451,9 +3483,8 @@ export default function App() {
                               const soaIsoIds = getSoaIsoIds(req.req_id);
                               const hasSoa = soaMappedData.has(req.req_id);
 
-                              // 운영현황: task description 우선 → SOA 집계 → 미입력
-                              const opsDisplayText =
-                                task?.description || soaOpText || "";
+                              // 통제 요구사항에 직접 연결된 조치내용을 시스템 원천 데이터에서 표시한다.
+                              const opsDisplayText=getControlActionText(req.req_id);
                               // 가이드: SOA 정책문서 우선 → GUIDE_MAP → req.policy_name
                               const guide =
                                 soaPolText ||
@@ -3599,50 +3630,10 @@ export default function App() {
                                     >
                                       {opsDisplayText ? (
                                         <div>
-                                          {task?.description ? (
-                                            <p
-                                              style={{
-                                                fontSize: "0.78rem",
-                                                lineHeight: 1.6,
-                                                color: "var(--text-secondary)",
-                                                margin: 0,
-                                              }}
-                                            >
-                                              {task.description.length > 110
-                                                ? task.description.substring(
-                                                    0,
-                                                    110
-                                                  ) + "\u2026"
-                                                : task.description}
-                                            </p>
-                                          ) : (
-                                            <div
-                                              style={{
-                                                display: "flex",
-                                                flexDirection: "column",
-                                                gap: "3px",
-                                              }}
-                                            >
-                                              {opsDisplayText
-                                                .split("\n")
-                                                .slice(0, 3)
-                                                .map((line, i) => (
-                                                  <p
-                                                    key={i}
-                                                    style={{
-                                                      fontSize: "0.77rem",
-                                                      lineHeight: 1.55,
-                                                      color:
-                                                        "var(--text-secondary)",
-                                                      margin: 0,
-                                                    }}
-                                                  >
-                                                    {line}
-                                                  </p>
-                                                ))}
-                                            </div>
-                                          )}
-                                          {hasSoa && !task?.description && (
+                                          <div style={{display:"flex",flexDirection:"column",gap:"3px"}}>
+                                            {opsDisplayText.split("\n").slice(0,3).map((line,i)=><p key={i} style={{fontSize:"0.77rem",lineHeight:1.55,color:"var(--text-secondary)",margin:0}}>{line}</p>)}
+                                          </div>
+                                          {hasSoa && (
                                             <span
                                               style={{
                                                 display: "inline-block",
@@ -3704,6 +3695,10 @@ export default function App() {
                                           "1px solid var(--border-subtle)",
                                       }}
                                     >
+                                      <div style={{fontSize:"0.72rem",lineHeight:1.45,color:"var(--text-secondary)",marginBottom:"6px"}}>
+                                        {controlPlan.flatMap(item=>item.outputs.map(output=>`${item.work.id} ${output}`)).slice(0,4).map(output=><span key={output} style={{display:"block"}}>• {output}</span>)}
+                                        {controlPlan.reduce((sum,item)=>sum+item.outputs.length,0)>4&&<small>외 {controlPlan.reduce((sum,item)=>sum+item.outputs.length,0)-4}종</small>}
+                                      </div>
                                       {latestEvidence ? (
                                         <button
                                           style={{
@@ -3903,7 +3898,7 @@ export default function App() {
                                         gap: "20px",
                                       }}
                                     >
-                                      {/* 운영현황 (전문) */}
+                                      {/* 통제별 조치내용 (전문) */}
                                       <div>
                                         <div
                                           style={{
@@ -3923,7 +3918,7 @@ export default function App() {
                                               margin: 0,
                                             }}
                                           >
-                                            📋 운영현황
+                                            📋 통제별 조치내용
                                           </p>
                                           {hasSoa && (
                                             <span
@@ -3942,39 +3937,11 @@ export default function App() {
                                             </span>
                                           )}
                                         </div>
-                                        {task?.description && (
-                                          <div
-                                            style={{
-                                              background: "var(--bg-card)",
-                                              border:
-                                                "1px solid var(--border-color)",
-                                              borderRadius: "6px",
-                                              padding: "10px 12px",
-                                              marginBottom: "8px",
-                                            }}
-                                          >
-                                            <p
-                                              style={{
-                                                fontSize: "0.72rem",
-                                                fontWeight: 700,
-                                                color: "var(--color-info)",
-                                                marginBottom: "4px",
-                                              }}
-                                            >
-                                              실무 이행 내용
-                                            </p>
-                                            <p
-                                              style={{
-                                                fontSize: "0.8rem",
-                                                lineHeight: 1.7,
-                                                color: "var(--text-secondary)",
-                                                margin: 0,
-                                              }}
-                                            >
-                                              {task.description}
-                                            </p>
-                                          </div>
-                                        )}
+                                        {controlPlan.map(item=><div key={item.work.id} style={{background:"var(--bg-card)",border:"1px solid var(--border-color)",borderRadius:"6px",padding:"10px 12px",marginBottom:"8px"}}>
+                                          <p style={{fontSize:"0.76rem",fontWeight:700,color:"var(--color-info)",marginBottom:"4px"}}>{item.action}</p>
+                                          <p style={{fontSize:"0.78rem",lineHeight:1.6,color:"var(--text-secondary)",margin:0}}>R {item.organization.ownerDepartment} · C {item.organization.cooperatingDepartments.join('·')||'—'} · 검토 {item.organization.reviewerDepartment} · 승인 {item.organization.approver}</p>
+                                          <div style={{fontSize:"0.76rem",lineHeight:1.6,color:"var(--text-muted)",margin:"5px 0 0"}}>{item.outputRows.map(row=><p key={row.id} style={{margin:"2px 0"}}>필수 산출물: {row.requiredOutput} · R {row.responsible}</p>)}</div>
+                                        </div>)}
                                         {soaOpText && (
                                           <div>
                                             <p
@@ -4057,7 +4024,7 @@ export default function App() {
                                               ))}
                                             </div>
                                           )}
-                                        {!task?.description && !soaOpText && (
+                                        {controlPlan.length===0 && (
                                           <p
                                             style={{
                                               fontSize: "0.8rem",
@@ -4066,7 +4033,7 @@ export default function App() {
                                               margin: 0,
                                             }}
                                           >
-                                            ⚠️ 운영 이력 미등록
+                                            ⚠️ 통제 조치내용 미등록
                                           </p>
                                         )}
                                       </div>
@@ -4428,18 +4395,11 @@ export default function App() {
                                               marginBottom: "4px",
                                             }}
                                           >
-                                            🎯 To-Be
+                                            🎯 통제 완료 기준
                                           </p>
-                                          <p
-                                            style={{
-                                              fontSize: "0.78rem",
-                                              color: "var(--text-secondary)",
-                                              margin: 0,
-                                              lineHeight: 1.6,
-                                            }}
-                                          >
-                                            {tobe}
-                                          </p>
+                                          <div style={{display:"flex",flexDirection:"column",gap:"6px"}}>
+                                            {completionDetails.map((completion,index)=><p key={index} style={{fontSize:"0.76rem",color:"var(--text-secondary)",margin:0,lineHeight:1.55}}>{completion}</p>)}
+                                          </div>
                                         </div>
                                       </div>
                                     </div>
@@ -4461,8 +4421,8 @@ export default function App() {
                       <tr>
                         <th style={{ width: "90px" }}>번호</th>
                         <th style={{ width: "140px" }}>점검항목 / 주기</th>
-                        <th>운영현황</th>
-                        <th style={{ width: "200px" }}>기록(증적)</th>
+                        <th>통제별 조치내용</th>
+                        <th style={{ width: "200px" }}>필수 산출물·증적</th>
                         <th style={{ width: "190px" }}>관련문서(정책/지침)</th>
                         <th style={{ width: "85px" }}>상태</th>
                       </tr>
@@ -4470,7 +4430,9 @@ export default function App() {
                     <tbody>
                       {filteredRequirements.length > 0 ? (
                         filteredRequirements.map(req => {
-                          const task = tasks.find(t => t.req_id === req.req_id);
+                          const controlPlan=getControlActionPlan(req.req_id);
+                          const linkedWorkIds=controlPlan.map(item=>item.work.id);
+                          const task=tasks.find(task=>linkedWorkIds.some(workId=>task.task_id.includes(`-${workId}-`)));
                           const yearStatus=getMatrixYearStatus(req.req_id);
                           const status = yearStatus.label;
                           const importedEvidence = evidences.find(
@@ -4489,8 +4451,7 @@ export default function App() {
                                   path: importedEvidence.file_path,
                                 }
                               : null);
-                          const opsText =
-                            task?.description || "운영 이력 미등록";
+                          const opsText=getControlActionText(req.req_id)||"통제 조치내용 미등록";
                           let borderClass = "row-border-overdue";
                           if (status === "ISO 27001 적합"||status === "현행화 완료")
                             borderClass = "row-border-completed";
@@ -7092,7 +7053,7 @@ export default function App() {
                       {mappingTableData.map(g => {
                         const hasMapped = g.isms_items.length > 0;
                         const mappedReqs=g.isms_items.map(item=>item.req_id);
-                        const mappedTasks=tasks.filter(task=>mappedReqs.includes(task.req_id));
+                        const mappedTasks=tasks.filter(task=>getTaskRequirementIds(task.task_id).some(reqId=>mappedReqs.includes(reqId)));
                         const currentYear=String(operatingYear);
                         const linkedEvidence=evidences.filter(evidence=>mappedReqs.includes(evidence.req_id)&&evidence.verification_status!=="증적제외");
                         const currentVerified=linkedEvidence.filter(evidence=>evidence.verification_status==="검증완료"&&(evidence.source_type==="업로드"||evidence.created_at.includes(currentYear)));
