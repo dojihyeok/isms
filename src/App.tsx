@@ -1642,22 +1642,40 @@ const generateNumericId = () => Date.now() + Math.floor(Math.random() * 1000);
 
 const generateTaskSuffix = () => 100 + Math.floor(Math.random() * 900);
 
-const escapeSpreadsheetXml = (value: unknown) => String(value ?? '')
-  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 const spreadsheetColumnWidth = (rows: unknown[][], columnIndex: number) => {
   const header=String(rows[0]?.[columnIndex]??'');
   const longest=rows.slice(0,200).reduce((max,row)=>Math.max(max,String(row[columnIndex]??'').split(/\r?\n| \| /).reduce((lineMax,line)=>Math.max(lineMax,line.length),0)),header.length);
   const longText=/내용|항목|이유|근거|조항|업무명|세부작업|완료조건|산출물|부서/.test(header);
   return Math.min(longText?280:180,Math.max(/ID|번호|연도|상태/.test(header)?68:85,longest*7+18));
 };
-const spreadsheetSheet = (name: string, rows: unknown[][]) => {
-  const columnCount=Math.max(1,...rows.map(row=>row.length));
-  const columns=Array.from({length:columnCount},(_,index)=>`<Column ss:AutoFitWidth="0" ss:Width="${spreadsheetColumnWidth(rows,index)}"/>`).join('');
-  const tableRows=rows.map((row,index)=>`<Row${index===0?' ss:Height="30"':''}>${row.map(value=>`<Cell ss:StyleID="${index===0?'Header':'Body'}"><Data ss:Type="String">${escapeSpreadsheetXml(value)}</Data></Cell>`).join('')}</Row>`).join('');
-  const filter=rows.length?`<AutoFilter x:Range="R1C1:R${rows.length}C${columnCount}" xmlns="urn:schemas-microsoft-com:office:excel"/>`:'';
-  return `<Worksheet ss:Name="${escapeSpreadsheetXml(name)}"><Table ss:DefaultRowHeight="18">${columns}${tableRows}</Table>${filter}<WorksheetOptions xmlns="urn:schemas-microsoft-com:office:excel"><FreezePanes/><FrozenNoSplit/><SplitHorizontal>1</SplitHorizontal><TopRowBottomPane>1</TopRowBottomPane><ActivePane>2</ActivePane><ProtectObjects>False</ProtectObjects><ProtectScenarios>False</ProtectScenarios></WorksheetOptions></Worksheet>`;
+const spreadsheetWorkbook = async (sheets: {name:string;rows:unknown[][]}[]) => {
+  const { Workbook }=await import('exceljs');
+  const workbook=new Workbook();
+  workbook.creator='MOIN ISMS-P';
+  workbook.created=new Date();
+  sheets.forEach(sheet=>{
+    const worksheet=workbook.addWorksheet(sheet.name,{views:[{state:'frozen',ySplit:1}]});
+    sheet.rows.forEach(row=>worksheet.addRow(row.map(value=>String(value??''))));
+    const columnCount=Math.max(1,...sheet.rows.map(row=>row.length));
+    worksheet.columns=Array.from({length:columnCount},(_,index)=>({width:Math.round(spreadsheetColumnWidth(sheet.rows,index)/7)}));
+    worksheet.properties.defaultRowHeight=18;
+    if(sheet.rows.length){
+      worksheet.autoFilter={from:{row:1,column:1},to:{row:sheet.rows.length,column:columnCount}};
+      const header=worksheet.getRow(1);header.height=30;
+      header.eachCell(cell=>{
+        cell.font={bold:true,color:{argb:'FFFFFFFF'}};
+        cell.fill={type:'pattern',pattern:'solid',fgColor:{argb:'FF1F4E78'}};
+        cell.alignment={horizontal:'center',vertical:'middle',wrapText:true};
+      });
+    }
+    worksheet.eachRow((row,rowNumber)=>row.eachCell(cell=>{
+      if(rowNumber>1) cell.alignment={vertical:'top',wrapText:true};
+      cell.border={bottom:{style:'thin',color:{argb:'FFD9E2F3'}},right:{style:'thin',color:{argb:'FFE2E8F0'}}};
+    }));
+  });
+  const buffer=await workbook.xlsx.writeBuffer();
+  return new Uint8Array(buffer);
 };
-const spreadsheetWorkbook = (sheets: {name:string;rows:unknown[][]}[]) => `<?xml version="1.0"?><?mso-application progid="Excel.Sheet"?><Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet" xmlns:x="urn:schemas-microsoft-com:office:excel"><Styles><Style ss:ID="Default"><Alignment ss:Vertical="Top" ss:WrapText="1"/><Font ss:FontName="Arial" ss:Size="10"/></Style><Style ss:ID="Body"><Alignment ss:Vertical="Top" ss:WrapText="1"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#D9E2F3"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E2E8F0"/></Borders></Style><Style ss:ID="Header"><Alignment ss:Horizontal="Center" ss:Vertical="Center" ss:WrapText="1"/><Font ss:Bold="1" ss:Color="#FFFFFF"/><Interior ss:Color="#1F4E78" ss:Pattern="Solid"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#163A5C"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#FFFFFF"/></Borders></Style></Styles>${sheets.map(sheet=>spreadsheetSheet(sheet.name,sheet.rows)).join('')}</Workbook>`;
 
 const removeDemoIdentities = (text: string) =>
   text
@@ -3009,14 +3027,14 @@ export default function App() {
     });
   }, [isoMappingFilter, organizationMappingCorrections]);
 
-  const downloadAnnualWorkExcel = () => {
-    const controlRows: unknown[][] = [['통제ID','통제명','통제 요구내용','주요 점검 항목','점검주기','연결 운영업무','담당자가 이 업무를 해야 하는 이유']];
+  const downloadAnnualWorkExcel = async () => {
+    const controlRows: unknown[][] = [['통제 ID','통제명','통제 요구내용','주요 점검 항목','점검 주기','연결 운영업무','업무 수행 이유']];
     initialRequirements.forEach(requirement => {
       const works=operatingWorkMaster.filter(work=>work.isms.includes(requirement.req_id));
       const checkItems=controlCheckItems.get(requirement.req_id)??[];
       controlRows.push([requirement.req_id,requirement.subject,requirement.detail_desc,checkItems.map((item,index)=>`${index+1}. ${item}`).join(' | '),requirement.compliance_cycle,works.map(work=>`${work.id} ${work.activity}`).join(' | ')||'운영업무 매핑 필요',works.length?`${requirement.subject} 통제의 요구사항을 충족하고 심사 시 이행 사실을 입증하기 위해 연결된 운영업무를 수행합니다.`:'연결 운영업무를 지정해야 합니다.']);
     });
-    const wbsRows: unknown[][] = [['조회연도','업무ID','영역','업무명','수행주기','통제ID','통제명','통제 요구내용','주요 점검 항목','업무 수행이유','전자금융감독규정','내부 규정·지침 실제 조항','금감원 점검번호','금감원 점검 근거','WBS ID','단계','세부작업','완료조건','필수산출물','R 수행','보안팀 담당자','A 최종책임','C 협의','I 보고']];
+    const wbsRows: unknown[][] = [['조회 연도','업무 ID','영역','업무명','수행 주기','통제 ID','통제명','통제 요구내용','주요 점검 항목','업무 수행 이유','전자금융감독규정','내부 규정·지침 실제 조항','금감원 점검번호','금감원 점검 근거','WBS ID','단계','세부 작업','완료 조건','필수 산출물','R 수행부서','보안팀 담당자','A 최종책임','C 협의','I 보고']];
     annualWorkRows.forEach(({work}) => {
       const requirements=work.isms.map(reqId=>initialRequirements.find(requirement=>requirement.req_id===reqId)).filter((requirement): requirement is Requirement=>Boolean(requirement));
       const controlNames=requirements.map(requirement=>`${requirement.req_id} ${requirement.subject}`).join(' | ');
@@ -3029,9 +3047,9 @@ export default function App() {
         annualTaskYear,work.id,work.domain,work.activity,work.cycle,work.isms.join(', '),requirements.map(requirement=>requirement.subject).join(' | '),controlDetails,checkItems,reason,work.efr,internalClauses,work.fss.join(', '),fssBasis,item.id,item.phase,item.task,item.completionCriteria,item.requiredOutput,item.responsible,item.responsible.includes('정보보안팀')?getMoinSecurityAssignee(work):'해당 없음',item.accountable,item.consulted.join(' · '),item.informed.join(' · '),
       ]));
     });
-    const fssRows: unknown[][] = [['업무ID','업무명','금감원 점검번호','근거 파일·시트·점검 취지']];
+    const fssRows: unknown[][] = [['업무 ID','업무명','금감원 점검번호','근거 파일·시트·점검 취지']];
     annualWorkRows.forEach(({work})=>work.fss.forEach(reference=>fssRows.push([work.id,work.activity,reference,fssCheckBasis(reference)])));
-    const applicationRows: unknown[][] = [['업무ID','인증 준비업무','제출 자료·확인정보','자료 제출부서(R)','취합·검증','검토','최종 승인','완료조건','근거']];
+    const applicationRows: unknown[][] = [['업무 ID','인증 준비업무','제출 자료·확인정보','자료 제출부서(R)','취합·검증','검토','최종 승인','완료 조건','근거']];
     operatingWorkMaster.filter(work=>work.id.startsWith('APP-')).forEach(work=>{
       const organization=getMoinWorkOrganization(work);
       work.outputs.forEach(output=>applicationRows.push([work.id,work.activity,output,getApplicationSourceDepartment(output),organization.ownerDepartment,organization.reviewerDepartment,organization.approver,`${output}의 기준일·산정범위·원천자료·작성자·검토자가 확인되고 신청서 또는 제출 증빙과 일치함`,(operatingWorkSourceRefs[work.id]??[]).join(' | ')]));
@@ -3043,21 +3061,23 @@ export default function App() {
     });
     const updateRows: unknown[][] = [['업무ID','상태','마감일','주관부서','수행결과','업데이트 안내']];
     tasks.filter(task=>task.task_id.startsWith(`AW-${operatingYear}-`)).forEach(task=>updateRows.push([task.task_id,task.status,task.due_date,task.owner_department||task.assignee_name,task.description||'','마감일·주관부서·수행결과와 진행중/미흡 상태만 업데이트. 완료·승인대기는 포털 증적·결재 절차로만 변경']));
-    const xml=spreadsheetWorkbook([{name:'부서별 인증준비',rows:applicationRows},{name:'통제 설명',rows:controlRows},{name:'통합 WBS 업무매핑',rows:wbsRows},{name:'금감원 점검 근거',rows:fssRows},{name:'연간수행현황',rows:scheduleRows},{name:'업데이트양식',rows:updateRows}]);
-    const url=URL.createObjectURL(new Blob([xml],{type:'application/vnd.ms-excel;charset=utf-8'}));
-    const anchor=document.createElement('a');anchor.href=url;anchor.download=`MOIN_정보보호_통합_WBS_${annualTaskYear}.xls`;anchor.click();URL.revokeObjectURL(url);
+    const file=await spreadsheetWorkbook([{name:'부서별 인증준비',rows:applicationRows},{name:'통제 설명',rows:controlRows},{name:'통합 WBS 업무매핑',rows:wbsRows},{name:'금감원 점검 근거',rows:fssRows},{name:'연간수행현황',rows:scheduleRows},{name:'업데이트양식',rows:updateRows}]);
+    const url=URL.createObjectURL(new Blob([file],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}));
+    const anchor=document.createElement('a');anchor.href=url;anchor.download=`MOIN_정보보호_통합_WBS_${annualTaskYear}.xlsx`;anchor.click();URL.revokeObjectURL(url);
     showToast(`${annualTaskYear}년 통제 설명·운영업무·WBS 통합 Excel을 생성했습니다.`, 'success');
   };
 
   const importAnnualWorkExcel = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file=event.target.files?.[0]; event.target.value=''; if(!file) return;
-    const xml=await file.text();
-    const documentXml=new DOMParser().parseFromString(xml,'application/xml');
-    if(documentXml.querySelector('parsererror')) { showToast('다운로드한 Excel 호환 .xls 파일만 업데이트할 수 있습니다.','warning'); return; }
-    const worksheets=Array.from(documentXml.getElementsByTagNameNS('*','Worksheet'));
-    const sheet=worksheets.find(node=>(node.getAttribute('ss:Name')||node.getAttributeNS('urn:schemas-microsoft-com:office:spreadsheet','Name'))==='업데이트양식');
+    const { Workbook }=await import('exceljs');
+    const workbook=new Workbook();
+    try { await workbook.xlsx.load(await file.arrayBuffer() as unknown as Parameters<typeof workbook.xlsx.load>[0]); }
+    catch { showToast('이 포털에서 다운로드한 .xlsx 파일만 업데이트할 수 있습니다.','warning'); return; }
+    const sheet=workbook.getWorksheet('업데이트양식');
     if(!sheet){showToast('업데이트양식 시트를 찾을 수 없습니다.','warning');return;}
-    const rows=Array.from(sheet.getElementsByTagNameNS('*','Row')).map(row=>Array.from(row.getElementsByTagNameNS('*','Cell')).map(cell=>cell.getElementsByTagNameNS('*','Data')[0]?.textContent?.trim()||''));
+    const cellText=(value: unknown)=>typeof value==='object'&&value!==null&&'text' in value?String((value as {text:unknown}).text??'').trim():String(value??'').trim();
+    const rows:string[][]=[];
+    sheet.eachRow(row=>rows.push(Array.from({length:row.cellCount},(_,index)=>cellText(row.getCell(index+1).value))));
     const headers=rows[0]||[]; const index=(name:string)=>headers.indexOf(name);
     if(index('업무ID')<0){showToast('업무ID 열이 없어 업데이트할 수 없습니다.','warning');return;}
     const allowedStatuses=new Set(['완료','승인대기','진행중','미흡']);
@@ -4745,7 +4765,7 @@ export default function App() {
                       반복 운영업무를 WBS 작업패키지와 부서 책임으로 분해하고 연도별 일정·수행상태를 관리합니다.
                     </p>
                   </div>
-                  <div className="annual-excel-actions"><strong>{annualWorkRows.length}개 업무유형 · WBS {annualWorkRows.reduce((sum,row)=>sum+getOperatingWorkWbs(row.work).length,0)}개 · 연간 수행 {annualWorkRows.reduce((sum,row)=>sum+row.occurrences.length,0)}건</strong><div><button type="button" onClick={downloadAnnualWorkExcel}><FileSpreadsheet size={14}/>통합 WBS Excel</button><button type="button" onClick={()=>document.getElementById('annual-work-excel-upload')?.click()}><UploadCloud size={14}/>Excel 업데이트</button><input id="annual-work-excel-upload" type="file" accept=".xls,application/vnd.ms-excel" hidden onChange={importAnnualWorkExcel}/></div></div>
+                  <div className="annual-excel-actions"><strong>{annualWorkRows.length}개 업무유형 · WBS {annualWorkRows.reduce((sum,row)=>sum+getOperatingWorkWbs(row.work).length,0)}개 · 연간 수행 {annualWorkRows.reduce((sum,row)=>sum+row.occurrences.length,0)}건</strong><div><button type="button" onClick={downloadAnnualWorkExcel}><FileSpreadsheet size={14}/>통합 WBS Excel</button><button type="button" onClick={()=>document.getElementById('annual-work-excel-upload')?.click()}><UploadCloud size={14}/>Excel 업데이트</button><input id="annual-work-excel-upload" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden onChange={importAnnualWorkExcel}/></div></div>
                 </div>
                 <div className="annual-basis-summary"><div><span>전체 업무유형</span><strong>{operatingWorkWbsSummary(operatingWorkMaster).workTypes}개</strong></div><div><span>세부 WBS</span><strong>{operatingWorkWbsSummary(operatingWorkMaster).packages}개 작업패키지</strong></div><div><span>ISMS-P</span><strong>{operatingWorkSummary.ismsCovered}개 통제 연결</strong></div><div><span>내부 규정·지침</span><strong>{operatingWorkSummary.internalCovered}개 문서군</strong></div><div><span>금감원·전자금융</span><strong>업무 근거 연계</strong></div></div>
                 <div className="annual-selection-guide">
@@ -4775,7 +4795,7 @@ export default function App() {
                     <div className="annual-work-detail">
                       <div className="annual-work-meta"><span><b>필수 산출물</b>{work.outputs.join(' · ')}</span><span><b>업무 근거 매핑</b>{getOperatingWorkBasis(work).map(basis=><small key={basis}>{basis}</small>)}</span><span><b>내부 규정·지침 실제 조항</b>{getInternalPolicyClauses(work).map(clause=><small key={clause}>{clause}</small>)}</span>{work.fss.length>0&&<span><b>금감원 점검 근거</b>{work.fss.map(reference=><small key={reference}>{fssCheckBasis(reference)}</small>)}</span>}<span><b>통제 요구·주요 점검 항목·수행 이유</b>{work.isms.map(reqId=>initialRequirements.find(requirement=>requirement.req_id===reqId)).filter((requirement): requirement is Requirement=>Boolean(requirement)).map(requirement=><small key={requirement.req_id}><strong>{requirement.req_id} · {requirement.subject}</strong> — {requirement.detail_desc}{(controlCheckItems.get(requirement.req_id)??[]).map((item,index)=><em key={item}>점검 {index+1}. {item}</em>)}</small>)}<small>위 통제 요구사항과 주요 점검 항목을 충족하고 심사 시 실제 이행 결과를 증적으로 제시하기 위해 이 업무와 WBS를 수행합니다.</small></span></div>
                       <div className="wbs-heading"><div><b>Work Breakdown Structure</b><span>{getOperatingWorkWbs(work).length}개 작업패키지 · 각 작업의 완료조건과 조직 책임을 기준으로 수행</span></div><div className="raci-legend"><span>R 수행</span><span>A 최종책임</span><span>C 협의</span><span>I 보고</span></div></div>
-                      <div className="wbs-table-wrap"><table className="wbs-table"><thead><tr><th>WBS</th><th>단계</th><th>세부 작업</th><th>완료조건</th><th>필수 산출물</th><th>R 수행부서</th><th>보안팀 담당자</th><th>A 최종책임</th><th>C 협의</th><th>I 보고</th></tr></thead><tbody>{getOperatingWorkWbs(work).map(item=><tr key={item.id}><td>{item.id}</td><td><span className={`wbs-phase phase-${item.phase}`}>{item.phase}</span></td><td><strong>{item.task}</strong></td><td>{item.completionCriteria}</td><td>{item.requiredOutput}</td><td>{item.responsible}</td><td>{item.responsible.includes('정보보안팀')?getMoinSecurityAssignee(work):'—'}</td><td>{item.accountable}</td><td>{item.consulted.join(' · ')||'—'}</td><td>{item.informed.join(' · ')||'—'}</td></tr>)}</tbody></table></div>
+                      <div className="wbs-table-wrap"><table className="wbs-table"><thead><tr><th>WBS</th><th>단계</th><th>세부 작업</th><th>완료조건</th><th>필수 산출물</th><th>R 수행부서</th><th>보안팀 담당자</th><th>A 최종책임</th><th>C 협의</th><th>I 보고</th></tr></thead><tbody>{getOperatingWorkWbs(work).map(item=><tr key={item.id}><td>{item.id}</td><td><span className={`wbs-phase phase-${item.phase.replace(/\s/g,'')}`}>{item.phase}</span></td><td><strong>{item.task}</strong></td><td>{item.completionCriteria}</td><td>{item.requiredOutput}</td><td>{item.responsible}</td><td>{item.responsible.includes('정보보안팀')?getMoinSecurityAssignee(work):'—'}</td><td>{item.accountable}</td><td>{item.consulted.join(' · ')||'—'}</td><td>{item.informed.join(' · ')||'—'}</td></tr>)}</tbody></table></div>
                       <h4 className="annual-occurrence-title">{annualTaskYear}년 {annualTaskYear===operatingYear?'실제 수행 건 선택':'반복 일정 계획'}</h4>
                       <div className="annual-occurrence-grid">{occurrences.map(task=><button key={task.task_id} disabled={annualTaskYear!==operatingYear} className={selectedTaskId===task.task_id?'selected':''} onClick={()=>{setSelectedTaskId(task.task_id);setTempDroppedFiles([]);setShowTaskDetail(true)}}><strong>{task.title.match(/^\[([^\]]+)\]/)?.[1]||'수시'}</strong><small>{task.due_date}</small>{annualTaskYear===operatingYear?<span className={`status-badge ${task.status==='완료'?'completed':task.status==='승인대기'?'pending':task.status==='진행중'?'in-progress':'overdue'}`}>{task.status}</span>:<span className="status-badge planned">계획</span>}<em>{annualTaskYear===operatingYear?(selectedTaskId===task.task_id?'선택됨':'수행 건 선택'):'일정 기준'}</em></button>)}</div>
                       {annualTaskYear===operatingYear&&occurrences.some(task=>task.task_id===selectedTaskId)&&<div className="selected-occurrence-action"><div><strong>{occurrences.find(task=>task.task_id===selectedTaskId)?.title}</strong><span>수행 건을 선택했습니다. WBS를 계속 확인하거나 아래 버튼을 눌러 수행·증적·결재 화면을 여세요.</span></div><button type="button" onClick={()=>document.getElementById('task-workspace-detail')?.scrollIntoView({behavior:'smooth',block:'start'})}>수행·결재 화면 열기</button></div>}
