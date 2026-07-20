@@ -7,12 +7,13 @@ import {
   History,
   LayoutDashboard,
   Lock,
+  ShieldCheck,
   Target,
   UserCheck,
   Users,
 } from 'lucide-react';
 
-export type UserRole = 'CISO' | '보안팀장' | '엔지니어' | '개인정보담당자' | '외부 심사원';
+export type UserRole = 'CISO' | 'CPO' | '보안팀장' | '엔지니어' | '개인정보담당자' | '업무부서 담당자' | '부서장' | '외부 심사원';
 export type Framework = 'ISMS-P' | 'ISO27001';
 
 interface AppSidebarProps {
@@ -42,13 +43,19 @@ export function AppSidebar({
 }: AppSidebarProps) {
   const userName = currentRole === 'CISO'
     ? 'CISO'
+    : currentRole === 'CPO'
+      ? 'CPO'
     : currentRole === '보안팀장'
       ? '보안팀장'
     : currentRole === '엔지니어'
       ? '보안엔지니어'
       : currentRole === '개인정보담당자'
         ? '개인정보보호담당자'
-        : '외부 심사위원';
+        : currentRole === '업무부서 담당자'
+          ? '업무부서 담당자'
+          : currentRole === '부서장'
+            ? '업무부서장'
+            : '외부 심사위원';
 
   return (
     <aside className="sidebar">
@@ -79,9 +86,12 @@ export function AppSidebar({
         <span className="role-label">현재 시스템 접속 역할 (RBAC)</span>
         <select className="role-select" value={currentRole} onChange={(event) => onRoleChange(event.target.value as UserRole)}>
           <option value="CISO">CISO (최종 결재권자)</option>
+          <option value="CPO">CPO (개인정보 최종 결재권자)</option>
           <option value="보안팀장">보안팀장 (증적 검토자)</option>
           <option value="엔지니어">보안엔지니어 (실무자)</option>
           <option value="개인정보담당자">개인정보보호담당자 (실무자)</option>
+          <option value="업무부서 담당자">업무부서 담당자 (실무자)</option>
+          <option value="부서장">부서장 (업무 검토자)</option>
           <option value="외부 심사원">외부 심사원 (Read-Only 심사위원)</option>
         </select>
       </div>
@@ -122,6 +132,9 @@ export function AppSidebar({
             <button className={`menu-item ${activeTab === 'tasks' ? 'active' : ''}`} onClick={() => onNavigate('tasks', 'ISMS-P')}>
               <UserCheck size={18} />연간 보안업무 관리
               {countPending > 0 && <span className="menu-item-badge warning">{countPending}</span>}
+            </button>
+            <button className={`menu-item ${activeTab === 'certification-ops' ? 'active' : ''}`} onClick={() => onNavigate('certification-ops', 'ISMS-P')}>
+              <ShieldCheck size={18} />인증 운영센터
             </button>
             <button className={`menu-item ${activeTab === 'evidence' ? 'active' : ''}`} onClick={() => onNavigate('evidence', 'ISMS-P')}>
               <FolderGit size={18} />통합 증적 보관소 (VFS)

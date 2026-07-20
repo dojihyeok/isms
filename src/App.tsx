@@ -59,9 +59,11 @@ import type {
 import { usePersistentState } from "./hooks/usePersistentState";
 import { SecurityOrganizationPage } from "./components/SecurityOrganizationPage";
 import { GovernanceEvidenceRepository } from "./components/GovernanceEvidenceRepository";
+import { CertificationOperationsCenter } from "./components/CertificationOperationsCenter";
 import { getOperatingWorkBasis, operatingWorkMaster, operatingWorkSourceRefs, operatingWorkSummary } from "./data/operatingWorkMaster";
 import { getMoinSecurityAssignee, getMoinWorkOrganization } from "./data/moinOrganizationMapping";
 import { getOperatingWorkWbs, operatingWorkWbsSummary } from "./data/operatingWorkWbs";
+import { defaultControlReviews, type ControlReviewRecord } from "./data/controlGovernance";
 import requirementsCatalog from "../refer/requirements.json";
 
 // ==========================================
@@ -1893,6 +1895,10 @@ export default function App() {
     "isms_audit_logs_clean_v2",
     initialAuditLogs
   );
+  const [controlReviews,setControlReviews]=usePersistentState<ControlReviewRecord[]>(
+    "isms_control_reviews_v1",
+    defaultControlReviews,
+  );
 
   // UI Control States
   const [activeTab, setActiveTab] = useState<string>("dashboard");
@@ -2238,12 +2244,18 @@ export default function App() {
   const approveTaskByCISO = (taskId: string) => {
     const task = tasks.find(t => t.task_id === taskId);
     if (!task) return;
+    const mappedReqIds=getTaskRequirementIds(task.task_id);
+    const finalApprover=mappedReqIds.some(reqId=>reqId.startsWith("3."))?"CPO":"CISO";
+    if(currentRole!==finalApprover){
+      showToast(`${finalApprover}만 이 업무를 최종 승인할 수 있습니다.`,"warning");
+      return;
+    }
     const securityLeadReview = task.approval_path.find(
       node => node.role === "검토자"
     );
     if (securityLeadReview?.status !== "approved") {
       showToast(
-        "보안팀장의 증적 적정성 확인이 완료된 후 CISO 최종 승인이 가능합니다.",
+        `검토자의 증적 적정성 확인이 완료된 후 ${finalApprover} 최종 승인이 가능합니다.`,
         "warning"
       );
       return;
@@ -2456,11 +2468,13 @@ export default function App() {
     );
 
     // 댓글 등록
+    const rejectingTask=tasks.find(task=>task.task_id===taskId);
+    const rejectingApprover=rejectingTask&&getTaskRequirementIds(rejectingTask.task_id).some(reqId=>reqId.startsWith("3."))?"CPO":"CISO";
     const newComment: TaskComment = {
       comment_id: generateNumericId(),
       task_id: taskId,
-      writer_name: "CISO",
-      writer_role: "CISO",
+      writer_name: rejectingApprover,
+      writer_role: rejectingApprover,
       content: `⚠️ [결재 반려 알림] 사유: ${rejectReason}`,
       created_at: new Date().toLocaleString("ko-KR", { hour12: false }),
     };
@@ -2487,11 +2501,14 @@ export default function App() {
     if (!text.trim()) return;
 
     const roleName = currentRole;
-    const authorMap = {
+    const authorMap: Record<UserRole,string> = {
       CISO: "CISO",
+      CPO: "CPO",
       보안팀장: "보안팀장",
       엔지니어: "보안엔지니어",
       개인정보담당자: "개인정보보호담당자",
+      "업무부서 담당자": "업무부서 담당자",
+      부서장: "업무부서장",
       "외부 심사원": "외부 심사원",
     };
 
@@ -3069,11 +3086,12 @@ export default function App() {
             status:'계획',
           })),
     }));
-    const controlRows: unknown[][] = [['통제 ID','통제명','통제 요구내용','주요 점검 항목','점검 주기','통제별 조치내용','수행부서','필수 산출물','완료 기준','업무 수행 이유']];
+    const controlRows: unknown[][] = [['통제 ID','통제명','통제 요구내용','주요 점검 항목','점검 주기','조치 승인 상태','통제별 조치내용','수행부서','필수 산출물','완료 기준','업무 수행 이유']];
     initialRequirements.forEach(requirement => {
       const works=operatingWorkMaster.filter(work=>work.isms.includes(requirement.req_id));
       const checkItems=controlCheckItems.get(requirement.req_id)??[];
-      controlRows.push([requirement.req_id,requirement.subject,requirement.detail_desc,checkItems.map((item,index)=>`${index+1}. ${item}`).join(' | '),requirement.compliance_cycle,getControlActionText(requirement.req_id),works.map(work=>{const organization=getMoinWorkOrganization(work);return `${work.id}: R ${organization.ownerDepartment} / C ${organization.cooperatingDepartments.join('·')||'—'} / 검토 ${organization.reviewerDepartment} / 승인 ${organization.approver}`}).join(' | '),getControlOutputText(requirement.req_id),getControlCompletionText(requirement.req_id),works.length?`${requirement.subject} 통제의 요구사항과 주요 점검 항목을 충족하고 실제 이행 결과를 증명하기 위해 연결된 조치내용을 수행합니다.`:'연결 운영업무를 지정해야 합니다.']);
+      const review=controlReviews.find(item=>item.reqId===requirement.req_id);
+      controlRows.push([requirement.req_id,requirement.subject,requirement.detail_desc,checkItems.map((item,index)=>`${index+1}. ${item}`).join(' | '),requirement.compliance_cycle,review?.status??'초안',review?.actionText||getControlActionText(requirement.req_id),works.map(work=>{const organization=getMoinWorkOrganization(work);return `${work.id}: R ${organization.ownerDepartment} / C ${organization.cooperatingDepartments.join('·')||'—'} / 검토 ${organization.reviewerDepartment} / 승인 ${organization.approver}`}).join(' | '),getControlOutputText(requirement.req_id),getControlCompletionText(requirement.req_id),works.length?`${requirement.subject} 통제의 요구사항과 주요 점검 항목을 충족하고 실제 이행 결과를 증명하기 위해 연결된 조치내용을 수행합니다.`:'연결 운영업무를 지정해야 합니다.']);
     });
     const wbsRows: unknown[][] = [['조회 연도','업무 ID','영역','업무명','수행 주기','통제 ID','통제명','통제 요구내용','주요 점검 항목','통제별 조치내용','업무 수행 이유','전자금융감독규정','내부 규정·지침 실제 조항','금감원 점검번호','금감원 점검 근거','WBS ID','단계','세부 작업','완료 조건','필수 산출물','R 수행부서','보안팀 담당자','A 최종책임','C 협의','I 보고']];
     exportAnnualWorkRows.forEach(({work}) => {
@@ -3201,6 +3219,9 @@ export default function App() {
               }}
               onEscalate={() => triggerEscalation("TASK-2026-005")}
             />
+          )}
+          {activeTab === "certification-ops" && (
+            <CertificationOperationsCenter currentRole={currentRole} reviews={controlReviews} setReviews={setControlReviews} />
           )}
 
           {activeTab === "organization" && (
@@ -3454,6 +3475,7 @@ export default function App() {
                               const linkedTasks=tasks.filter(task=>linkedWorkIds.some(workId=>task.task_id.includes(`-${workId}-`)));
                               const task=linkedTasks[0];
                               const completionDetails=controlPlan.flatMap(item=>item.completion.map(completion=>`${item.work.id} ${completion}`));
+                              const governanceReview=controlReviews.find(item=>item.reqId===req.req_id);
                               const yearStatus=getMatrixYearStatus(req.req_id);
                               const status = yearStatus.label;
                               const isRowExpanded =
@@ -3588,6 +3610,9 @@ export default function App() {
                                         }}
                                       >
                                         {req.subject}
+                                      </span>
+                                      <span className={`matrix-review-badge ${governanceReview?.status==='승인'?'approved':'pending'}`}>
+                                        조치 {governanceReview?.status??'초안'}
                                       </span>
                                       <span
                                         style={{
@@ -4789,6 +4814,7 @@ export default function App() {
                 const req = initialRequirements.find(
                   r => r.req_id === currentTask.req_id
                 );
+                const taskFinalApprover=getTaskRequirementIds(currentTask.task_id).some(reqId=>reqId.startsWith("3."))?"CPO":"CISO";
 
                 return (
                   <div className="split-pane-layout" id="task-workspace-detail">
@@ -5265,20 +5291,20 @@ export default function App() {
                                       setTempDroppedFiles([]);
                                     }}
                                   >
-                                    기안 및 결재요청 (보안팀장/CISO 송신)
+                                    기안 및 결재요청 (검토자/{taskFinalApprover} 송신)
                                   </button>
                                 )}
 
-                                {/* CISO용 승인 / 반려 버튼 */}
+                                {/* 검토자 승인 / 반려 버튼 */}
                                 {currentTask.status === "승인대기" &&
-                                  currentRole === "보안팀장" && (
+                                  (currentRole === "보안팀장"||currentRole==="부서장") && (
                                     <>
                                       {currentTask.approval_path.find(
                                         node => node.role === "검토자"
                                       )?.status === "approved" ? (
                                         <div className="evidence-review-message approved">
                                           <CheckCircle2 size={16} /> 증적 확인
-                                          완료 · CISO 최종 승인대기
+                                          완료 · {taskFinalApprover} 최종 승인대기
                                         </div>
                                       ) : (
                                         <button
@@ -5297,7 +5323,7 @@ export default function App() {
                                   )}
 
                                 {currentTask.status === "승인대기" &&
-                                  currentRole === "CISO" && (
+                                  currentRole === taskFinalApprover && (
                                     <>
                                       <button
                                         className="action-btn"
@@ -5338,14 +5364,15 @@ export default function App() {
                                         {currentTask.approval_path.find(
                                           node => node.role === "검토자"
                                         )?.status === "approved"
-                                          ? "CISO 최종 승인 (VFS 자동 적치)"
-                                          : "보안팀장 증적 확인 필요"}
+                                          ? `${taskFinalApprover} 최종 승인 (VFS 자동 적치)`
+                                          : "검토자 증적 확인 필요"}
                                       </button>
                                     </>
                                   )}
 
                                 {currentTask.status === "승인대기" &&
                                   currentRole !== "CISO" &&
+                                  currentRole !== "CPO" &&
                                   currentRole !== "보안팀장" && (
                                     <div
                                       style={{

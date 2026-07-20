@@ -12,6 +12,7 @@ const TAB_TITLES: Record<string, string> = {
   mapping: 'ISO 27001 ↔ ISMS-P 통제항목 매핑 & Gap 분석',
   organization: '정보보호 조직·인력 구성 및 인증 운영체계',
   'governance-evidence': '정보보호 관리체계 운영활동·증적 통합 보관소',
+  'certification-ops': 'ISMS-P 인증 운영센터',
 };
 
 interface AppHeaderProps {
